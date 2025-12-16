@@ -33,6 +33,6 @@ docker build -t candidate-eval-backend .
 Run with your `.env` values (not copied into the image):
 
 ```bash
-docker run --env-file .env -p 8080:8080 candidate-eval-backend
+docker run --env-file .env -p 8000:8000 candidate-eval-backend
 ```
 
