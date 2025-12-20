@@ -10,6 +10,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_RESPONSES_MODEL = process.env.OPENAI_RESPONSES_MODEL || 'gpt-4.1';
 const VECTOR_STORE_ID_1 = process.env.VECTOR_STORE_ID_1 || null;
 const VECTOR_STORE_ID_2 = process.env.VECTOR_STORE_ID_2 || null;
+const VECTOR_STORE_ID_3 = process.env.VECTOR_STORE_ID_3 || null;
 
 if (!OPENAI_API_KEY) {
   console.error('Environment variable "OPENAI_API_KEY" is required.');
@@ -51,6 +52,13 @@ const FILE_COLLECTIONS = {
     vectorStoreName: 'secondary-knowledge-base',
     envVar: 'VECTOR_STORE_ID_2',
     initialVectorStoreId: VECTOR_STORE_ID_2,
+  }),
+  training: createCollection({
+    key: 'training',
+    label: 'Training Programs',
+    vectorStoreName: 'training-knowledge-base',
+    envVar: 'VECTOR_STORE_ID_3',
+    initialVectorStoreId: VECTOR_STORE_ID_3,
   }),
 };
 
@@ -208,6 +216,158 @@ app.post('/chatbot', async (req, res) => {
   }
 });
 
+app.post('/training/from-file', async (req, res) => {
+  const { jobDescription, candidateInfo } = req.body;
+
+  if (!jobDescription || !candidateInfo) {
+    return res.status(400).json({ error: 'Both jobDescription and candidateInfo are required.' });
+  }
+
+  const trainingCollection = FILE_COLLECTIONS.training;
+  if (!trainingCollection.vectorStoreId) {
+    return res.status(400).json({ 
+      error: 'No training file uploaded. Please upload a training programs file first.' 
+    });
+  }
+
+  const vectorStoreIds = getTrainingVectorStoreIds();
+
+  try {
+    const prompt = `You are a training recommendation expert.
+
+TASK: Find suitable training programs for a candidate based on job requirements and available training options.
+
+JOB POSITION TO ANALYZE: "${jobDescription}"
+CANDIDATE TO ANALYZE: "${candidateInfo}"
+
+Instructions:
+1. Search the uploaded job descriptions to find the job matching "${jobDescription}"
+2. Search the uploaded resumes to find the candidate matching "${candidateInfo}"
+3. Search the uploaded training programs file to find all available training options
+4. Analyze the skill gaps between what the job requires and what the candidate currently has
+5. Select the most suitable training programs from the training file that would help close these gaps
+
+Return ONLY a valid JSON object with this exact structure:
+{
+  "recommendations": [
+    {
+      "id": "unique-id-from-file",
+      "name": "Training Program Name (exactly as it appears in the training file)",
+      "description": "Brief description of what the training covers",
+      "duration": "Duration if specified in the file, otherwise 'TBD'",
+      "reason": "Specific reason why this training addresses the candidate's skill gap for this particular job"
+    }
+  ]
+}
+
+Important:
+- Only recommend programs that exist in the uploaded training file
+- Select 3-5 most relevant programs
+- If no suitable programs found in the file, return empty recommendations array
+- Base reasons on actual skill gaps between job requirements and candidate profile`;
+
+    const response = await openai.responses.create({
+      model: OPENAI_RESPONSES_MODEL,
+      input: prompt,
+      instructions: 'You are a training recommendation assistant. You must search all uploaded files (job descriptions, resumes, and training programs) to provide accurate recommendations. Always respond with valid JSON only.',
+      tools: [
+        {
+          type: 'file_search',
+          vector_store_ids: vectorStoreIds,
+        },
+      ],
+    });
+
+    const text = extractResponseText(response);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0]);
+      res.json(result);
+    } else {
+      res.json({ recommendations: [] });
+    }
+  } catch (error) {
+    console.error('Error generating recommendations from file:', error);
+    res.status(500).json({ error: 'Failed to generate recommendations.' });
+  }
+});
+
+app.post('/training/ai-generate', async (req, res) => {
+  const { jobDescription, candidateInfo } = req.body;
+
+  if (!jobDescription || !candidateInfo) {
+    return res.status(400).json({ error: 'Both jobDescription and candidateInfo are required.' });
+  }
+
+  const vectorStoreIds = getActiveVectorStoreIds();
+
+  try {
+    const prompt = `You are a training recommendation expert.
+
+TASK: Generate personalized training recommendations for a candidate based on job requirements.
+
+JOB POSITION TO ANALYZE: "${jobDescription}"
+CANDIDATE TO ANALYZE: "${candidateInfo}"
+
+Instructions:
+1. Search the uploaded job descriptions to find the job matching "${jobDescription}"
+2. Search the uploaded resumes to find the candidate matching "${candidateInfo}"
+3. Carefully analyze the skill gaps between:
+   - What the job requires (skills, experience, qualifications)
+   - What the candidate currently has (skills, experience, education)
+4. Generate practical, industry-standard training recommendations that would help the candidate succeed in this role
+
+Return ONLY a valid JSON object with this exact structure:
+{
+  "recommendations": [
+    {
+      "id": "ai-unique-id",
+      "name": "Training Program Name",
+      "description": "What the candidate will learn and why it's valuable for this role",
+      "duration": "Realistic duration (e.g., '2 weeks', '1 month', '40 hours')",
+      "reason": "Specific skill gap this training addresses - be specific about what the job needs vs what the candidate has"
+    }
+  ]
+}
+
+Important:
+- Generate 3-5 highly relevant training recommendations
+- Be specific and practical - recommend real-world training topics
+- Focus on the actual skill gaps identified from the documents
+- Each recommendation should directly address a gap between job requirements and candidate abilities`;
+
+    const response = await openai.responses.create({
+      model: OPENAI_RESPONSES_MODEL,
+      input: prompt,
+      instructions: 'You are a training recommendation assistant. You must search uploaded job descriptions and resumes to understand requirements and candidate profile. Generate practical, actionable training recommendations. Always respond with valid JSON only.',
+      ...(vectorStoreIds.length
+        ? {
+            tools: [
+              {
+                type: 'file_search',
+                vector_store_ids: vectorStoreIds,
+              },
+            ],
+          }
+        : {}),
+    });
+
+    const text = extractResponseText(response);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0]);
+      res.json(result);
+    } else {
+      res.json({ recommendations: [] });
+    }
+  } catch (error) {
+    console.error('Error generating AI recommendations:', error);
+    res.status(500).json({ error: 'Failed to generate recommendations.' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
@@ -303,6 +463,24 @@ function getActiveVectorStoreIds() {
     ids.push(VECTOR_STORE_ID_2);
   }
   return ids.slice(0, 2);
+}
+
+/**
+ * Get vector store IDs for training recommendations.
+ * Prioritizes training collection + secondary (resumes).
+ * Limited to 2 due to OpenAI API constraint.
+ */
+function getTrainingVectorStoreIds() {
+  const ids = [];
+  // Prioritize training and secondary (resumes) for training recommendations
+  const priority = ['training', 'secondary', 'primary'];
+  for (const key of priority) {
+    const collection = FILE_COLLECTIONS[key];
+    if (collection?.vectorStoreId && !ids.includes(collection.vectorStoreId)) {
+      ids.push(collection.vectorStoreId);
+    }
+  }
+  return ids.slice(0, 2); // OpenAI allows max 2 vector stores
 }
 
 function extractResponseText(response) {
